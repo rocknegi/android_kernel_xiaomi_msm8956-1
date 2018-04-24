@@ -91,7 +91,7 @@ static DEFINE_MUTEX(lazymode_mutex);
 static struct notifier_block state_notifier_hook;
 
 static struct delayed_work lazyplug_work;
-static struct work_struct lazyplug_boost;
+static struct delayed_work lazyplug_boost;
 
 static struct workqueue_struct *lazyplug_wq;
 static struct workqueue_struct *lazyplug_boost_wq;
@@ -211,7 +211,7 @@ module_param(nr_possible_cores, uint, 0644);
 static unsigned int __read_mostly cpu_nr_run_threshold = CPU_NR_THRESHOLD;
 module_param(cpu_nr_run_threshold, uint, 0664);
 
-static unsigned int __read_mostly nr_run_hysteresis = NR_RUN_HYSTERESIS_HEXA;
+static unsigned int __read_mostly nr_run_hysteresis = NR_RUN_HYSTERESIS_OCTA;
 module_param(nr_run_hysteresis, uint, 0664);
 
 #ifdef DEBUG_LAZYPLUG
@@ -457,22 +457,20 @@ static int state_notifier_call(struct notifier_block *this,
 static unsigned int Lnr_run_profile_sel = 0;
 static unsigned int Ltouch_boost_active = true;
 static bool Lprevious_state = false;
-void lazyplug_enter_lazy(bool enter)
+void lazyplug_enter_lazy(bool enter, bool video)
 {
 	mutex_lock(&lazymode_mutex);
 	if (enter && !Lprevious_state) {
-#ifdef DEBUG_LAZYPLUG
-		pr_info("lazyplug: entering lazy mode\n");
-#endif
 		Lnr_run_profile_sel = nr_run_profile_sel;
 		Ltouch_boost_active = touch_boost_active;
-		nr_run_profile_sel = 6; /* lazy profile */
+		// if called from vidc, use conservative profile; otherwise use lazy
+		nr_run_profile_sel = (video ? 2 : 6);
+		pr_info("lazyplug: entering lazy mode with profile %d\n",
+				nr_run_profile_sel);
 		touch_boost_active = false;
 		Lprevious_state = true;
 	} else if (!enter && Lprevious_state) {
-#ifdef DEBUG_LAZYPLUG
 		pr_info("lazyplug: exiting lazy mode\n");
-#endif
 		touch_boost_active = Ltouch_boost_active;
 		nr_run_profile_sel = Lnr_run_profile_sel;
 		Lprevious_state = false;
@@ -486,7 +484,8 @@ static void lazyplug_input_event(struct input_handle *handle,
 	if (lazyplug_active && touch_boost_active && suspended && !touched) {
 		idle_count = 0;
 		pr_info("lazyplug touched!\n");
-		queue_work_on(0, lazyplug_wq, &lazyplug_boost);
+		queue_delayed_work(lazyplug_wq, &lazyplug_boost,
+			msecs_to_jiffies(10));
 		touched = true;
 	}
 }
@@ -570,15 +569,15 @@ int __init lazyplug_init(void)
 	rc = input_register_handler(&lazyplug_input_handler);
 
 	state_notifier_hook.notifier_call = state_notifier_call;
-	//if (state_register_client(&state_notifier_hook))
-		//pr_info("%s state_notifier hook create failed!\n", __FUNCTION__);
+	if (state_register_client(&state_notifier_hook))
+		pr_info("%s state_notifier hook create failed!\n", __FUNCTION__);
 
 	lazyplug_wq = alloc_workqueue("lazyplug",
 				WQ_HIGHPRI | WQ_UNBOUND, 1);
 	lazyplug_boost_wq = alloc_workqueue("lplug_boost",
 				WQ_HIGHPRI | WQ_UNBOUND, 1);
 	INIT_DELAYED_WORK(&lazyplug_work, lazyplug_work_fn);
-	INIT_WORK(&lazyplug_boost, lazyplug_boost_fn);
+	INIT_DELAYED_WORK(&lazyplug_boost, lazyplug_boost_fn);
 	queue_delayed_work(lazyplug_wq, &lazyplug_work,
 		msecs_to_jiffies(10));
 
