@@ -727,7 +727,8 @@ static int calculate_residency(struct power_params *base_pwr,
 		((int32_t)(next_pwr->ss_power * next_pwr->time_overhead_us)
 		- (int32_t)(base_pwr->ss_power * base_pwr->time_overhead_us));
 
-	residency /= (int32_t)(base_pwr->ss_power  - next_pwr->ss_power);
+	if (base_pwr->ss_power != next_pwr->ss_power)
+		residency /= (int32_t)(base_pwr->ss_power  - next_pwr->ss_power);
 
 	if (residency < 0) {
 		pr_err("%s: residency < 0 for LPM\n",
@@ -741,7 +742,7 @@ static int calculate_residency(struct power_params *base_pwr,
 
 static int parse_cpu_levels(struct device_node *node, struct lpm_cluster *c)
 {
-	struct device_node *n;
+	struct device_node *n = NULL;
 	int ret = -ENOMEM;
 	int i, j;
 	char *key;
@@ -943,7 +944,7 @@ struct lpm_cluster *parse_cluster(struct device_node *node,
 		c->last_level = c->nlevels-1;
 
 	for (i = 0; i < c->nlevels; i++) {
-		for (j = 0; j < c->nlevels; j++) {
+		for (j = 1; j < c->nlevels; j++) {
 			if (i >= j) {
 				c->levels[i].pwr.residencies[j] = 0;
 				continue;

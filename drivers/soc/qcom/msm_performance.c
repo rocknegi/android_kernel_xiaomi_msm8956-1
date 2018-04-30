@@ -25,6 +25,8 @@
 #include <linux/module.h>
 #include <linux/kthread.h>
 
+static int touchboost = 0;
+
 static struct mutex managed_cpus_lock;
 
 /* Maximum number to clusters that this module will manage*/
@@ -128,6 +130,29 @@ static struct task_struct *notify_thread;
 #define LAST_LD_CHECK_TOL	(2 * USEC_PER_MSEC)
 
 /**************************sysfs start********************************/
+
+static int set_touchboost(const char *buf, const struct kernel_param *kp)
+{
+	int val;
+
+	if (sscanf(buf, "%d\n", &val) != 1)
+		return -EINVAL;
+
+	touchboost = val;
+
+	return 0;
+}
+
+static int get_touchboost(char *buf, const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%d", touchboost);
+}
+
+static const struct kernel_param_ops param_ops_touchboost = {
+	.set = set_touchboost,
+	.get = get_touchboost,
+};
+device_param_cb(touchboost, &param_ops_touchboost, NULL, 0644);
 
 static int set_num_clusters(const char *buf, const struct kernel_param *kp)
 {
@@ -319,6 +344,9 @@ static int set_cpu_min_freq(const char *buf, const struct kernel_param *kp)
 	cpumask_var_t limit_mask;
 	int ret;
 
+	if (!touchboost)
+		return 0;
+
 	while ((cp = strpbrk(cp + 1, " :")))
 		ntokens++;
 
@@ -401,6 +429,9 @@ static int set_cpu_max_freq(const char *buf, const struct kernel_param *kp)
 	struct cpufreq_policy policy;
 	cpumask_var_t limit_mask;
 	int ret;
+
+	if (!touchboost)
+		return 0;
 
 	while ((cp = strpbrk(cp + 1, " :")))
 		ntokens++;
@@ -1002,6 +1033,10 @@ static int set_workload_detect(const char *buf, const struct kernel_param *kp)
 	unsigned int val, i;
 	struct cluster *i_cl;
 	unsigned long flags;
+	int msm_perf = strcmp(current->comm, "perfd");
+
+       if (msm_perf && !touchboost)
+               return -EINVAL;
 
 	if (!clusters_inited)
 		return -EINVAL;
@@ -1730,7 +1765,7 @@ static void single_mod_exit_timer(unsigned long data)
 static int init_cluster_control(void)
 {
 	unsigned int i;
-	int ret;
+	int ret = 0;
 	struct kobject *module_kobj;
 
 	managed_clusters = kzalloc(num_clusters * sizeof(struct cluster *),
@@ -1745,19 +1780,22 @@ static int init_cluster_control(void)
 								GFP_KERNEL);
 		if (!managed_clusters[i]) {
 			pr_err("msm_perf:Cluster %u mem alloc failed\n", i);
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto error;
 		}
 		if (!alloc_cpumask_var(&managed_clusters[i]->cpus,
 		     GFP_KERNEL)) {
 			pr_err("msm_perf:Cluster %u cpu alloc failed\n",
 			       i);
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto error;
 		}
 		if (!alloc_cpumask_var(&managed_clusters[i]->offlined_cpus,
 		     GFP_KERNEL)) {
 			pr_err("msm_perf:Cluster %u off_cpus alloc failed\n",
 			       i);
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto error;
 		}
 		managed_clusters[i]->max_cpu_request = -1;
 		managed_clusters[i]->single_enter_load = DEF_SINGLE_ENT;
@@ -1786,23 +1824,41 @@ static int init_cluster_control(void)
 	module_kobj = kset_find_obj(module_kset, KBUILD_MODNAME);
 	if (!module_kobj) {
 		pr_err("msm_perf: Couldn't find module kobject\n");
-		return -ENOENT;
+		ret = -ENOENT;
+		goto error;
 	}
 	mode_kobj = kobject_create_and_add("workload_modes", module_kobj);
 	if (!mode_kobj) {
 		pr_err("msm_perf: Failed to add mode_kobj\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		kobject_put(module_kobj);
+		goto error;
 	}
 	ret = sysfs_create_group(mode_kobj, &attr_group);
 	if (ret) {
 		pr_err("msm_perf: Failed to create sysfs\n");
-		return ret;
+		kobject_put(module_kobj);
+		kobject_put(mode_kobj);
+		goto error;
 	}
 
 	notify_thread = kthread_run(notify_userspace, NULL, "wrkld_notify");
 	clusters_inited = true;
 
 	return 0;
+
+error:
+	for (i = 0; i < num_clusters; i++) {
+		if (!managed_clusters[i])
+			break;
+		if (managed_clusters[i]->offlined_cpus)
+			free_cpumask_var(managed_clusters[i]->offlined_cpus);
+		if (managed_clusters[i]->cpus)
+			free_cpumask_var(managed_clusters[i]->cpus);
+		kfree(managed_clusters[i]);
+	}
+	kfree(managed_clusters);
+	return ret;
 }
 
 static int __init msm_performance_init(void)

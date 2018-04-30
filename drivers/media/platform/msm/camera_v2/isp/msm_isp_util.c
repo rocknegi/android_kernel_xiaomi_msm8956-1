@@ -168,6 +168,7 @@ int msm_isp_update_bandwidth(enum msm_isp_hw_client client,
 		pr_err("%s:error bandwidth manager inactive use_cnt:%d bus_clnt:%d\n",
 			__func__, isp_bandwidth_mgr.use_count,
 			isp_bandwidth_mgr.bus_client);
+		mutex_unlock(&bandwidth_mgr_mutex);
 		return -EINVAL;
 	}
 
@@ -1388,13 +1389,15 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 		int i;
 		uint32_t *hi_tbl_ptr = NULL, *lo_tbl_ptr = NULL;
 		uint32_t hi_val, lo_val, lo_val1;
-		if (reg_cfg_cmd->cmd_type == VFE_WRITE_DMI_64BIT) {
+		if (reg_cfg_cmd->cmd_type == VFE_WRITE_DMI_64BIT ||
+			reg_cfg_cmd->cmd_type == VFE_READ_DMI_64BIT) {
 			hi_tbl_ptr = cfg_data +
 				reg_cfg_cmd->u.dmi_info.hi_tbl_offset/4;
 		}
 		lo_tbl_ptr = cfg_data +
 			reg_cfg_cmd->u.dmi_info.lo_tbl_offset/4;
-		if (reg_cfg_cmd->cmd_type == VFE_WRITE_DMI_64BIT)
+		if (reg_cfg_cmd->cmd_type == VFE_WRITE_DMI_64BIT ||
+			reg_cfg_cmd->cmd_type == VFE_READ_DMI_64BIT)
 			reg_cfg_cmd->u.dmi_info.len =
 				reg_cfg_cmd->u.dmi_info.len / 2;
 		for (i = 0; i < reg_cfg_cmd->u.dmi_info.len/4; i++) {

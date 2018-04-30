@@ -5,6 +5,8 @@
  *
  *  Copyright (C) 1991-2002  Linus Torvalds
  *
+ *  Copyright (c) 2014, NVIDIA CORPORATION.  All rights reserved.
+ *
  *  1996-12-23  Modified by Dave Grothe to fix bugs in semaphores and
  *		make semaphores SMP safe
  *  1998-11-19	Implemented schedule_timeout() and related stuff
@@ -80,6 +82,7 @@
 #include <asm/tlb.h>
 #include <asm/irq_regs.h>
 #include <asm/mutex.h>
+#include <asm/relaxed.h>
 #ifdef CONFIG_PARAVIRT
 #include <asm/paravirt.h>
 #endif
@@ -1601,6 +1604,7 @@ static inline int got_boost_kick(void)
 
 	return test_bit(BOOST_KICK, &rq->hmp_flags);
 }
+
 
 static inline void clear_boost_kick(int cpu)
 {
@@ -3300,9 +3304,10 @@ unsigned long wait_task_inactive(struct task_struct *p, long match_state)
 		 * is actually now running somewhere else!
 		 */
 		while (task_running(rq, p)) {
-			if (match_state && unlikely(p->state != match_state))
+			if (match_state && unlikely(cpu_relaxed_read_long
+ 				(&(p->state)) != match_state))
 				return 0;
-			cpu_relax();
+			cpu_read_relax();
 		}
 
 		/*
@@ -3456,7 +3461,7 @@ out:
 		 * leave kernel.
 		 */
 		if (p->mm && printk_ratelimit()) {
-			printk_deferred("process %d (%s) no longer affine to cpu%d\n",
+			pr_debug("process %d (%s) no longer affine to cpu%d\n",
 					task_pid_nr(p), p->comm, cpu);
 		}
 	}
@@ -3796,8 +3801,8 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 	 * If the owning (remote) cpu is still in the middle of schedule() with
 	 * this task as prev, wait until its done referencing the task.
 	 */
-	while (p->on_cpu)
-		cpu_relax();
+	while (cpu_relaxed_read(&(p->on_cpu)))
+		cpu_read_relax();
 	/*
 	 * Pairs with the smp_wmb() in finish_lock_switch().
 	 */
@@ -6437,6 +6442,23 @@ int idle_cpu(int cpu)
 	return 1;
 }
 
+int idle_cpu_relaxed(int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+
+	if (cpu_relaxed_read_long(&rq->curr) != (u64)rq->idle)
+		return 0;
+
+	if (cpu_relaxed_read(&rq->nr_running))
+		return 0;
+
+#ifdef CONFIG_SMP
+	if (!llist_empty_relaxed(&rq->wake_list))
+		return 0;
+#endif
+
+	return 1;
+}
 /**
  * idle_task - return the idle task for a given cpu.
  * @cpu: the processor in question.
@@ -7898,8 +7920,13 @@ static int __migrate_task(struct task_struct *p, int src_cpu, int dest_cpu)
 	bool moved = false;
 	int ret = 0;
 
-	if (unlikely(!cpu_active(dest_cpu)))
-		return ret;
+	if (p->flags & PF_KTHREAD) {
+		if (unlikely(!cpu_online(dest_cpu)))
+			return ret;
+	} else {
+		if (unlikely(!cpu_active(dest_cpu)))
+			return ret;
+	}
 
 	rq_src = cpu_rq(src_cpu);
 	rq_dest = cpu_rq(dest_cpu);

@@ -40,6 +40,12 @@
 #include <linux/msm_bcl.h>
 #include <linux/ktime.h>
 #include "pmic-voter.h"
+#include <linux/thermal.h>
+#include <linux/device.h>
+
+#ifdef CONFIG_FORCE_FAST_CHARGE
+#include <linux/fastcharge.h>
+#endif
 
 /* Mask/Bit helpers */
 #define _SMB_MASK(BITS, POS) \
@@ -3511,6 +3517,10 @@ static void smbchg_external_power_changed(struct power_supply *psy)
 	if (usb_supply_type != POWER_SUPPLY_TYPE_USB)
 		goto  skip_current_for_non_sdp;
 
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	if (force_fast_charge)
+		current_limit = 900;
+#endif
 	pr_smb(PR_MISC, "usb type = %s current_limit = %d\n",
 			usb_type_name, current_limit);
 
@@ -6707,7 +6717,7 @@ static int smbchg_hw_init(struct smbchg_chip *chip)
 
 	/* battery missing detection */
 	mask =  BATT_MISSING_ALGO_BIT;
-	reg = chip->bmd_algo_disabled ? BATT_MISSING_ALGO_BIT : 0;
+	reg = chip->bmd_algo_disabled ? 0 : BATT_MISSING_ALGO_BIT;
 	if (chip->bmd_pin_src < BPD_TYPE_DEFAULT) {
 		mask |= BMD_PIN_SRC_MASK;
 		reg |= chip->bmd_pin_src << PIN_SRC_SHIFT;
@@ -7595,7 +7605,7 @@ static int smbchg_probe(struct spmi_device *spmi)
 	int rc;
 	struct smbchg_chip *chip;
 	struct power_supply *usb_psy;
-	struct qpnp_vadc_chip *vadc_dev, *vchg_vadc_dev;
+	struct qpnp_vadc_chip *vadc_dev = NULL, *vchg_vadc_dev = NULL;
 
 	usb_psy = power_supply_get_by_name("usb");
 	if (!usb_psy) {

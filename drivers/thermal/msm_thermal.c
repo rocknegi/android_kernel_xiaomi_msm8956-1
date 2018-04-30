@@ -3347,6 +3347,9 @@ static void check_temp(struct work_struct *work)
 	long temp = 0;
 	int ret = 0;
 
+	if (!msm_thermal_probed)
+		return;
+
 	do_therm_reset();
 
 	ret = therm_get_temp(msm_thermal_info.sensor_id, THERM_TSENS_ID, &temp);
@@ -3687,6 +3690,13 @@ static void freq_mitigation_init(void)
 		goto init_freq_thread;
 
 	for_each_possible_cpu(cpu) {
+		/*
+		 * Hotplug may not be enabled,
+		 * make sure core sensor id is initialized.
+		 */
+		cpus[cpu].sensor_id =
+			sensor_get_id((char *)cpus[cpu].sensor_type);
+		cpus[cpu].id_type = THERM_ZONE_ID;
 		if (!(msm_thermal_info.freq_mitig_control_mask & BIT(cpu)))
 			continue;
 		hi_thresh = &cpus[cpu].threshold[FREQ_THRESHOLD_HIGH];
@@ -4963,6 +4973,27 @@ static struct kernel_param_ops module_ops = {
 module_param_cb(enabled, &module_ops, &enabled, 0644);
 MODULE_PARM_DESC(enabled, "enforce thermal limit on cpu");
 
+/* Poll ms */
+module_param_named(poll_ms, msm_thermal_info.poll_ms, uint, 0664);
+
+/* Temp Threshold */
+module_param_named(temp_threshold, msm_thermal_info.limit_temp_degC,
+			int, 0664);
+module_param_named(core_limit_temp_degC, msm_thermal_info.core_limit_temp_degC,
+		   uint, 0644);
+module_param_named(hotplug_temp_degC, msm_thermal_info.hotplug_temp_degC,
+		   uint, 0644);
+module_param_named(freq_mitig_temp_degc,
+		   msm_thermal_info.freq_mitig_temp_degc, uint, 0644);
+
+/* Control Mask */
+module_param_named(freq_control_mask,
+		   msm_thermal_info.bootup_freq_control_mask, uint, 0644);
+module_param_named(core_control_mask, msm_thermal_info.core_control_mask,
+			uint, 0664);
+module_param_named(freq_mitig_control_mask,
+		   msm_thermal_info.freq_mitig_control_mask, uint, 0644);
+
 static ssize_t show_cc_enabled(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
@@ -5238,9 +5269,6 @@ int msm_thermal_pre_init(struct device *dev)
 		goto pre_init_exit;
 	}
 
-	if (!tsens_temp_at_panic)
-		msm_thermal_panic_notifier_init(dev);
-
 	if (!thresh) {
 		thresh = kzalloc(
 				sizeof(struct threshold_info) * MSM_LIST_MAX_NR,
@@ -5396,6 +5424,7 @@ int msm_thermal_init(struct msm_thermal_data *pdata)
 		cpus_previously_online_update();
 		register_cpu_notifier(&msm_thermal_cpu_notifier);
 	}
+	msm_thermal_panic_notifier_init(&pdata->pdev->dev);
 
 	return ret;
 }
